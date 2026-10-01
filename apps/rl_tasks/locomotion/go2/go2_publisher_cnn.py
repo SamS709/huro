@@ -94,8 +94,8 @@ class Go2PolicyController(Node):
         print(f"[INFO] Using device: {self.device}")
         
         # Load policy model        
-        policy_lidar_name = "policy_cnn_rnn_seq5.pt"
-        policy_name = "policy_cnn_rnn_seq5.pt"
+        policy_lidar_name = "policy_cnn_rnn3.pt"
+        policy_name = "policy_cnn_rnn3.pt"
         policy_lidar_path = os.path.join(share, "resources", "models", "go2", policy_lidar_name)
         policy_path = os.path.join(share, "resources", "models", "go2", policy_name)
         if not os.path.exists(policy_path):
@@ -213,7 +213,7 @@ class Go2PolicyController(Node):
             Twist, "/cmd_vel_nav", self.cmd_vel_callback, 10
         )
     
-        self.x_range = [0.8, -0.5] # height_map x range
+        self.x_range = [0.5, -0.3] # height_map x range
         self.y_range = [-0.5, 0.5] # height_map y range
         self.res = 0.1 # height map resolution
         
@@ -263,7 +263,7 @@ class Go2PolicyController(Node):
         """Log spacemouse state"""
         self.lidar_state = msg
         # process_height_map(self.height_map, self.lidar_state, self.low_state, self.x_range, self.y_range, self.res, delete_count=5)
-        process_height_map_lidar_frame(self.height_map, self.lidar_state, self.low_state, self.x_range, self.y_range, self.res, delete_count=5)
+        process_height_map_lidar_frame(self.height_map, self.lidar_state, self.low_state, self.x_range, self.y_range, self.res, delete_count=1)
         
         
     def joy_callback(self, msg: Joy):

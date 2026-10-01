@@ -297,18 +297,23 @@ def get_obs_lidar_cnn(
 
     obs[3:6] = gravity_b
 
+    
+
+    # Fill joint positions (obs[13:25]) in policy order
+    obs[6:18] = torch.tensor(current_joint_pos_policy - default_pos_policy)
+
     # print(cmd_vel_msg)
-    obs[6:9] = torch.tensor([
+    obs[30:33] = torch.tensor([
         vel[0],  # forward velocity
         vel[1],  # lateral velocity (flip for correct direction)
         vel[2],  # yaw rate
     ])
 
-    # Fill joint positions (obs[13:25]) in policy order
-    obs[9:21] = torch.tensor(current_joint_pos_policy - default_pos_policy)
     # Fill joint velocities (obs[25:37]) in policy order
-    obs[21:33] = torch.tensor(current_joint_vel_policy)
+    obs[18:30] = torch.tensor(current_joint_vel_policy)
     obs[33:45] = prev_actions
+
+    
 
     # # clock data
     # obs[45:49] = phase_signal
@@ -321,7 +326,7 @@ def get_obs_lidar_cnn(
     else:
         heights = height_map[0, :, :].clone().reshape(1,1,height_map.shape[1],height_map.shape[2])  - 0.28
         confidences = height_map[2, :, :].clone().reshape(1,1,height_map.shape[1],height_map.shape[2])
-        height_map_copy = [torch.cat(heights, confidences, dim=1)] 
+        height_map_copy = [torch.cat((heights, confidences), dim=1)] 
     # print(height_map[0, :, :].clone().reshape(1,1,height_map.shape[1],height_map.shape[2]))
     # print(height_map[0, :, :].clone().flip(0, 1).reshape(1,1,15,10))
     
