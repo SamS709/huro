@@ -1,0 +1,25 @@
+base_station,0,0	Cave Straight 03 Type B,90,0	Cave Straight 01 Type B,90,0	Cave Corner 02 Type B,90,0
+			Cave Straight 03 Type B,0,0						Cave Corner 02 Type B,180,0	Cave Cap Type B,90,0
+			Cave Corner 02 Type B,-90,0	Cave Straight 02 Type B,-90,0	Cave 3 Way 01 Type B,180,0	Cave Straight 01 Type B,90,0	Cave Straight 03 Type B,90,0	Cave Straight 01 Type B,-90,0	Cave Corner 01 Type B,0,0
+					Cave Straight 03 Type B,0,0
+					Cave Corner 02 Type B,-90,0	Cave Corner 02 Type B,90,0
+						Cave Straight 02 Type B,0,0
+					Cave Corner 01 Type B,180,0	Cave 3 Way 01 Type B,0,0	Cave Straight 02 Type B,-90,0	Cave Straight 01 Type B,90,0	Cave Straight 03 Type B,90,0	Cave Straight 02 Type B,90,0	Cave Corner 01 Type B,90,0
+					Cave Straight 03 Type B,0,0						Cave Corner 02 Type B,-90,0	Cave Elevation Type B,-90,-2	Cave Elevation Type B,-90,-4	Cave Corner 02 Type B,90,-4
+	Cave Corner 01 Type B,180,4	Cave Vertical Shaft Type B,90,0	Cave Straight 02 Type B,-90,0	Cave Straight 01 Type B,90,0	Cave 3 Way 01 Type B,90,0									Cave Straight 03 Type B,0,-4
+	Cave Straight 03 Type B,0,4				Cave Straight 01 Type B,180,0									Cave Straight 01 Type B,180,-4		Cave Cap Type B,180,-4
+	Cave Straight 01 Type B,180,4				Cave Corner 02 Type B,-90,0	Cave Straight 03 Type B,-90,0	Cave 3 Way 01 Type B,180,0	Cave Straight 03 Type B,90,0	Cave Straight 02 Type B,90,0	Cave Corner 01 Type B,90,0	Cave Cap Type B,180,0			Cave 3 Way 01 Type B,-90,-4	Cave Straight 01 Type B,90,-4	Cave Corner 01 Type B,0,-4
+	Cave Straight 03 Type B,180,4						Cave Straight 02 Type B,0,0			Cave Corner 02 Type B,-90,0	Cave Corner 02 Type B,0,0			Cave Straight 03 Type B,0,-4
+Cave Corner 01 Type B,180,4	Cave Corner 02 Type B,0,4						Cave Straight 03 Type B,0,0							Cave Straight 01 Type B,180,-4
+Cave Straight 01 Type B,180,4							Cave Straight 01 Type B,180,0							Cave Straight 03 Type B,180,-4
+Cave Corner 02 Type B,-90,4	Cave Corner 01 Type B,90,4						Cave 3 Way 01 Type B,-90,0	Cave Elevation Type B,-90,-2	Cave Straight 03 Type B,-90,-2	Cave Straight 01 Type B,90,-2	Cave Corner 01 Type B,90,-2		Cave Corner 02 Type B,180,-4	Cave Corner 01 Type B,0,-4
+Cave Corner 01 Type B,180,4	Cave 3 Way 01 Type B,0,4	Cave Corner 01 Type B,90,4					Cave Straight 01 Type B,0,0				Cave Corner 02 Type B,-90,-2	Cave Elevation Type B,-90,-4	Cave Corner 01 Type B,0,-4
+Cave Straight 02 Type B,0,4		Cave Corner 02 Type B,-90,4	Cave Straight 03 Type B,90,4	Cave Cap Type B,90,4			Cave Vertical Shaft Type B,180,0
+Cave Straight 01 Type B,180,4							Cave Straight 01 Type B,180,4
+Cave Cap Type B,0,4							Cave Straight 03 Type B,180,4
+							Cave Straight 03 Type B,0,4
+							Cave Straight 03 Type B,180,4
+						Cave Corner 01 Type B,180,4	Cave 3 Way 01 Type B,0,4	Cave Corner 02 Type B,90,4
+						Cave Straight 02 Type B,0,4		Cave Cap Type B,0,4
+						Cave Straight 01 Type B,180,4
+						Cave Cap Type B,0,4
