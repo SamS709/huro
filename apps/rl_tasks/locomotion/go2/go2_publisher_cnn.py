@@ -94,8 +94,8 @@ class Go2PolicyController(Node):
         print(f"[INFO] Using device: {self.device}")
         
         # Load policy model        
-        policy_lidar_name = "policy_cnn_rnn3.pt"
-        policy_name = "policy_cnn_rnn3.pt"
+        policy_lidar_name = "policy_cnn_rnn4.pt"
+        policy_name = "policy_cnn_rnn4.pt"
         policy_lidar_path = os.path.join(share, "resources", "models", "go2", policy_lidar_name)
         policy_path = os.path.join(share, "resources", "models", "go2", policy_name)
         if not os.path.exists(policy_path):
@@ -172,10 +172,10 @@ class Go2PolicyController(Node):
         self.lidar_state = None
         self.cmd_vel_state = None
 
-        self.kp = 65.0  # Position gain
-        self.kd = 5.0  # Velocity gain
-        self.kp_p = 25.0  # Position gain
-        self.kd_p = 0.5  # Velocity gain
+        self.kp = 65.0  # Position gain for sit / stand
+        self.kd = 5.0  # Velocity gain for sit / stand
+        self.kp_p = 25.0  # Position gain for policy
+        self.kd_p = 0.5  # Velocity gain for policy
         self.action_scale = 0.25  # Scale policy output
         self.action_smoothing = 1.0
 

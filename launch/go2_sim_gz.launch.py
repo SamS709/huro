@@ -129,8 +129,8 @@ def _launch_setup(context, *args, **kwargs):
     rviz_config = os.path.join(huro_share, "resources", "rviz", "go2.rviz")
     nav2_config = os.path.join(huro_share, 'resources', 'nav2', 'nav2_params.yaml')
 
-    # world_template_path = os.path.join(huro_share, "resources", "worlds", "factory.sdf")
-    world_template_path = os.path.join(huro_share, "resources", "worlds", "subt", "cave_circuit_practice_01.sdf")
+    world_template_path = os.path.join(huro_share, "resources", "worlds", "factory.sdf")
+    # world_template_path = os.path.join(huro_share, "resources", "worlds", "subt", "cave_circuit_practice_01.sdf")
     world_path = _generate_world_with_custom_stairs_height(
         world_template_path, stairs_step_height
     )
