@@ -1,562 +1,200 @@
 #!/usr/bin/env python3
-
 """
-RL Policy Controller for Unitree Go2 Robot
-Loads a PyTorch policy and controls the robot at 50Hz
+RL locomotion controller for the Unitree Go2 (perceptive CNN-RNN policy, 50 Hz).
+
+The policy, observation layout and height grid come from the Isaac-free ``go2_perception`` package, i.e. the exact
+code used in simulation. This node only does ROS I/O, the joystick state machine and low-level command publishing.
+
+TO RUN (simulation):
+    ros2 launch huro go2_rviz.launch.py
+    ros2 run huro spacemouse_publisher.py
+    ros2 run huro sim_go2
+    ros2 run huro go2_publisher_cnn.py --sim true
+
+Joystick (buttons configurable in DeployConfig.buttons):
+    4 stand up | 0 stand down | 9 start policy | 8 emergency (latched, kill the process to restart)
 """
 
-"""
-TO RUN:
+from __future__ import annotations
 
-ros2 launch huro go2_rviz.launch.py
-ros2 run huro spacemouse_publisher.py
-ros2 run huro sim_go2
-ros2 run huro go2_publisher.py 
-
-"""
-import rclpy
-from rclpy.node import Node
-from ament_index_python.packages import get_package_share_directory
-import torch
-import json
+import argparse
 import os
-import time
+from enum import Enum, auto
 
-from unitree_api.msg import Request
-
-from unitree_go.msg import LowCmd, LowState
+import rclpy
+import torch
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
-
-from huro_py.crc_go import Crc
-from huro_py.get_obs import get_obs_lidar_cnn
-from huro_py.utils import Mapper, MockCmdVel,process_height_map_lidar_frame, select_vel
+from rclpy.node import Node
 from sensor_msgs.msg import Joy, PointCloud2
-import sys
+from unitree_go.msg import LowCmd, LowState
+
+from huro_py.commands import CommandSelector
+from huro_py.deploy_config import DeployConfig
+from huro_py.joint_mapper import JointMapper
+from huro_py.lidar_map import LidarHeightMap, pointcloud2_xyz
+from huro_py.policy_runner import PolicyRunner
+from huro_py.posture import EmergencyRelease, JointRamp, stand_down_pose
+from huro_py.robot_interface import RateMonitor, build_low_cmd, read_low_state, release_sport_mode
+
+
 """
 cd /tmp
 git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
 cd unitree_sdk2_python
 pip3 install -e .
 """
-sys.path.insert(0, '/tmp/unitree_sdk2_python')
-from unitree_sdk2py.core.channel import ChannelFactory, ChannelFactoryInitialize
-from unitree_sdk2py.go2.sport.sport_client import SportClient
-from unitree_sdk2py.go2.robot_state.robot_state_client import RobotStateClient
 
 
+class Mode(Enum):
+    IDLE = auto()  # nothing is published
+    STAND_UP = auto()
+    STAND_DOWN = auto()
+    POLICY = auto()
+    EMERGENCY = auto()  # latched
 
 
 class Go2PolicyController(Node):
-    """RL Policy controller for Unitree Go2 locomotion."""
-
-    def __init__(
-        self,
-        sim=True,
-        vx=None,
-        vy=None,
-        wz=None,
-    ):
-        """
-        Initialize the policy controller.
-
-        Args:
-            policy_path: Path to the policy.pt file
-            policy_freq: Policy inference frequency in Hz (default: 50Hz)
-            control_freq: Motor command frequency in Hz (default: 500Hz, simulation dt=0.002)
-            kp: Position gain/stiffness (default: 25.0) - MUST match training value!
-            kd: Velocity gain/damping (default: 0.5)
-            action_scale: Scale factor for policy actions (default: 0.25)
-        """
-        params = []
-        if sim:
-            params.append(rclpy.parameter.Parameter("use_sim_time", value=True))
+    def __init__(self, cfg: DeployConfig, vx=None, vy=None, wz=None):
+        params = [rclpy.parameter.Parameter("use_sim_time", value=True)] if cfg.sim else []
         super().__init__("go2_policy_controller", parameter_overrides=params)
-        # Verify we're using sim time if the sim param is set to True
-        use_sim_time = self.get_parameter("use_sim_time").value
-        print(f"[INFO] use_sim_time: {use_sim_time}")
-
-        self.step_dt = 1 / 50  # policy freq = 50Hz
-        self.run_policy = False # set to false to rely on joy buttons to lauch the policy
-        if vx is not None or vy is not None or wz is not None:
-            self.run_policy = True
-
-        share = get_package_share_directory("huro")
-
-        # Emergency mode
-        self.emergency_mode = False
-        self.emergency_mode_start_time = None
-        self.last_commanded_positions = None
-        self.stand_start_pos = None
-        self.standing_down = False
-        self.standing_up = False
+        self.cfg = cfg
+        self.get_logger().info(f"use_sim_time: {self.get_parameter('use_sim_time').value}")
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"[INFO] Using device: {self.device}")
-        
-        # Load policy model        
-        policy_lidar_name = "policy_cnn_rnn_robust_1.pt"
-        policy_name = "policy_cnn_rnn_robust_1.pt"
-        policy_lidar_path = os.path.join(share, "resources", "models", "go2", policy_lidar_name)
-        policy_path = os.path.join(share, "resources", "models", "go2", policy_name)
-        if not os.path.exists(policy_path):
-            raise FileNotFoundError(f"Policy file not found: {policy_path}")
-        if not os.path.exists(policy_lidar_path):
-            raise FileNotFoundError(f"Policy file not found: {policy_lidar_path}")
-        self.policy_lidar = torch.jit.load(policy_lidar_path, map_location=self.device)
-        self.policy = torch.jit.load(policy_path, map_location=self.device)
-        self.policy_lidar.eval()
-        self.policy.eval()
-        print("[INFO] Policy loaded successfully")
+        self.get_logger().info(f"Using device: {self.device}")
 
-        # Initialize the mapper for the joints and the actions
-        mapping_file = "physx_to_mujoco_go2.yaml"
-        if not sim:
-            mapping_file = "sim_to_real.yaml"
+        # ---- model, joint mapping, sensors, commands
+        share = get_package_share_directory("huro")
+        policy_path = os.path.join(share, "resources", "models", "go2", cfg.policy_name)
+        mapping_path = os.path.join(share, "resources", "mappings", "go2", cfg.mapping_file)
+        for path in (policy_path, mapping_path):
+            if not os.path.exists(path):
+                raise FileNotFoundError(path)
 
-        mapping_path = policy_path = os.path.join(
-            share, "resources", "mappings", "go2", mapping_file
-        )
+        self.mapper = JointMapper(mapping_path, cfg.default_pos_sdk)
+        self.runner = PolicyRunner(policy_path, self.mapper, cfg, self.device)
+        self.lidar_map = LidarHeightMap(cfg, self.device)
+        self.commands = CommandSelector(cfg)
+        self.stand_up_pos = self.mapper.default_pos_sdk
+        self.stand_down_pos = stand_down_pose(self.mapper.default_pos_sdk)
+        self.get_logger().info(f"Policy loaded: {policy_path}")
 
-        if not sim:
-            self.default_pos_sdk = torch.tensor(
-                [
-                    -0.1,
-                    0.8,
-                    -1.5,  # FR: hip, thigh, calf (actuators 0-2)
-                    0.1,
-                    0.8,
-                    -1.5,  # FL: hip, thigh, calf (actuators 3-5)
-                    -0.1,
-                    1.0,
-                    -1.5,  # RR: hip, thigh, calf (actuators 6-8)
-                    0.1,
-                    1.0,
-                    -1.5,  # RL: hip, thigh, calf (actuators 9-11)
-                ], dtype=torch.float32
-            )
-        else:
-            self.default_pos_sdk = torch.tensor(
-                [
-                    0.1,
-                    0.8,
-                    -1.5,  # FL: hip, thigh, calf (actuators 0-2)
-                    -0.1,
-                    0.8,
-                    -1.5,  # FR: hip, thigh, calf (actuators 3-5)
-                    0.1,
-                    1.0,
-                    -1.5,  # RL: hip, thigh, calf (actuators 6-8)
-                    -0.1,
-                    1.0,
-                    -1.5,  # RR: hip, thigh, calf (actuators 9-11)
-                ], dtype=torch.float32
-            )
-        # Standing position (default joint positions but coud be different)
-        self.stand_up_pos = self.default_pos_sdk
-        self.stand_down_pos = torch.tensor(
-            [-0.35, 1.36, -2.65, 0.35, 1.36, -2.65,
-            -0.5, 1.36, -2.65, 0.5, 1.36, -2.65]
-        )
+        # ---- state machine
+        self.mode = Mode.IDLE
+        self.low_state: LowState | None = None
+        self.last_cmd_q: torch.Tensor | None = None
+        self.ramp: JointRamp | None = None
+        self.release: EmergencyRelease | None = None
+        self._events: list[str] = []  # button rising edges, consumed by the control tick
+        self._prev_pressed: set[int] = set()
+        if any(v is not None for v in (vx, vy, wz)):  # headless: constant command, start the policy directly
+            self.commands.set_fixed(vx, vy, wz)
+            self.mode = Mode.POLICY
 
-            
-        self.mapper = Mapper(
-            mapping_yaml_path=mapping_path, default_pos_sdk=self.default_pos_sdk
-        )
-
-        # Store latest action (for use between policy updates)
-        self.current_action = torch.zeros(12)     
-
-        # Store latest messages
-        self.low_state = None
-        self.controller_state = None
-        self.lidar_state = None
-        self.cmd_vel_state = None
-
-        self.kp = 65.0  # Position gain for sit / stand
-        self.kd = 5.0  # Velocity gain for sit / stand
-        self.kp_p = 25.0  # Position gain for policy
-        self.kd_p = 0.5  # Velocity gain for policy
-        self.action_scale = 0.25  # Scale policy output
-        self.action_smoothing = 1.0
-
-        self.time_to_stand = 5.0  # Time to reach the standing position
-
-        self.publish_count = 0
-        self.publish_start_wall = time.perf_counter()
-        self.last_publish_log_wall = self.publish_start_wall
-        self.last_publish_log_count = 0
-        self.publish_log_period = 5.0
-
-        # Statistics - initialize BEFORE callbacks
-        self.tick_count = 0
-
-        # Initialize communication
+        # ---- ROS I/O
         self.low_cmd_pub = self.create_publisher(LowCmd, "/lowcmd", 10)
+        self.rate = RateMonitor(self.get_logger())
+        self.create_subscription(LowState, "/lowstate", self._on_low_state, 10)
+        self.create_subscription(Joy, "/joy", self._on_joy, 10)
+        self.create_subscription(PointCloud2, "/utlidar/cloud", self._on_lidar, 10)
+        self.create_subscription(Twist, "/cmd_vel_nav", self._on_cmd_vel, 10)
 
-        
-        self.joy_sub = self.create_subscription(Joy, "/joy", self.joy_callback, 10)
+        if not cfg.sim:
+            release_sport_mode(cfg.iface, self.get_logger())
 
-        # Get low lovel data from robot
-        self.low_state_sub = self.create_subscription(
-            LowState, "/lowstate", self.low_state_callback, 10
-        )
-        
+        self.create_timer(cfg.step_dt, self.run)
+        self.get_logger().info(f"Controller ready, policy at {1.0 / cfg.step_dt:.0f} Hz")
 
-        
-        
-        self.lidar_sub = self.create_subscription(
-            PointCloud2, "/utlidar/cloud", self.lidar_callback, 10
-        )
-        
-        self.cmd_vel_state = MockCmdVel(vx, vy, wz)
-        self.cmd_vel_sub = self.create_subscription(
-            Twist, "/cmd_vel_nav", self.cmd_vel_callback, 10
-        )
-    
-        self.x_range = [0.5, -0.3] # height_map x range
-        self.y_range = [-0.5, 0.5] # height_map y range
-        self.res = 0.1 # height map resolution
-        
-        confidence = True # heightmap channel 1 if a point was detected by the lidar in this cell 0 else
-        height_map_channels = 3 if confidence else 2
-            
-        self.height_map = torch.zeros((height_map_channels, 
-                                       int((self.x_range[0] - self.x_range[1]) / self.res), 
-                                       int((self.y_range[1] - self.y_range[0]) / self.res)), dtype = torch.float32) # height_map init
-        if not sim:
-            ChannelFactoryInitialize(0, "enp0s31f6")
-            sport = SportClient()
-            sport.SetTimeout(10.0)
-            sport.Init()
+    def _now_s(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
 
-            self.get_logger().info("Sitting down...")
-            code = sport.StandDown()  # goes from standing to crouched
-            time.sleep(2)
-            self.get_logger().info("Robot seated.")
-            robot_state = RobotStateClient()
-            robot_state.Init()
-
-            # Get list of running services
-            code, services = robot_state.ServiceList()
-
-            # Stop the sport mode service (default policy)
-            code = robot_state.ServiceSwitch("sport_mode", False)
-            while code != 0:
-                print(f"Error switching service: {code}")
-                code = robot_state.ServiceSwitch("sport_mode", False)
-                time.sleep(1)
-            if code == 0:
-                print("Sport mode disabled - low-level control available")
-            time.sleep(1)
-
-        self.timer = self.create_timer(self.step_dt, self.run)
-
-        print(f"  Policy controller initialized")
-        print(f"  Policy runs at: {1 / self.step_dt}Hz")
-
-    def low_state_callback(self, msg: LowState):
-        """Log low state message."""            
+    # ------------------------------------------------------------------ callbacks
+    def _on_low_state(self, msg: LowState) -> None:
         self.low_state = msg
 
-        
-    def lidar_callback(self, msg: PointCloud2):
-        """Log spacemouse state"""
-        self.lidar_state = msg
-        # process_height_map(self.height_map, self.lidar_state, self.low_state, self.x_range, self.y_range, self.res, delete_count=5)
-        process_height_map_lidar_frame(self.height_map, self.lidar_state, self.low_state, self.x_range, self.y_range, self.res, delete_count=1)
-        
-        
-    def joy_callback(self, msg: Joy):
-        """Log spacemouse state"""
-        self.controller_state = msg
-        
-    def cmd_vel_callback(self, msg: Twist):
-        """Log spacemouse state"""
-        self.cmd_vel_state = msg
+    def _on_lidar(self, msg: PointCloud2) -> None:
+        self.lidar_map.update(pointcloud2_xyz(msg), self._now_s())
 
-    def emergency_mode_control(self):
-        """Smoothly reduce gains and torque to zero over release_duration."""
-        if self.low_state is None:
+    def _on_cmd_vel(self, msg: Twist) -> None:
+        self.commands.on_nav(msg, self._now_s())
+
+    def _on_joy(self, msg: Joy) -> None:
+        self.commands.on_joy(msg)
+        pressed = {i for i, b in enumerate(msg.buttons) if b}
+        for name, idx in self.cfg.buttons.items():
+            if idx in pressed and idx not in self._prev_pressed:
+                self._events.append(name)
+        self._prev_pressed = pressed
+
+    # ------------------------------------------------------------------ publishing
+    def _publish(self, q: torch.Tensor, kp: float, kd: float, tau: torch.Tensor | None = None) -> None:
+        self.last_cmd_q = q.clone()
+        self.low_cmd_pub.publish(build_low_cmd(q, kp, kd, tau))
+        self.rate.tick()
+
+    # ------------------------------------------------------------------ state machine
+    def _handle_button(self, name: str, state, now: float) -> None:
+        log = self.get_logger()
+        if self.mode == Mode.EMERGENCY:
             return
-        if self.last_commanded_positions is None:
-            # Latch posture once; avoid recomputing from live state while robot is falling.
-            self.last_commanded_positions = [self.low_state.motor_state[i].q for i in range(12)]
-
-        # Calculate progress (0 to 1)
-        release_duration = 5
-        elapsed = (
-            self.get_clock().now() - self.emergency_mode_start_time
-        ).nanoseconds * 1e-9
-        r = min(elapsed / release_duration, 1.0)
-
-        alpha = 1.0 - (1.0 - r) ** 10
-
-        # Gradually reduce gains from current values to zero
-        current_kp = self.kp * (1.0 - alpha)
-        current_kd = self.kd * (1.0 - alpha)
-
-        cmd = LowCmd()
-
-        for i in range(12):
-            q = self.low_state.motor_state[i].q
-            dq = self.low_state.motor_state[i].dq
-
-            # Compute diminishing torque
-            tau = current_kp * (self.last_commanded_positions[i] - q) - current_kd * dq
-
-            cmd.motor_cmd[i].mode = 0x01
-            cmd.motor_cmd[i].q = self.last_commanded_positions[i]
-            cmd.motor_cmd[i].dq = 0.0
-            cmd.motor_cmd[i].kp = current_kp
-            cmd.motor_cmd[i].kd = current_kd
-            cmd.motor_cmd[i].tau = tau
-
-        cmd.crc = Crc(cmd)
-        self.low_cmd_pub.publish(cmd)
-        self._log_publish_rate()
-
-    def stand_control2(self):
-        """PD control to standing position."""
-        if self.low_state is None:
-            return
-        if self.stand_start_pos is None:
-            # Latch posture once; avoid recomputing from live state while robot is falling.
-            self.stand_start_pos = [self.low_state.motor_state[i].q for i in range(12)]
-
-        cmd = LowCmd()
-        cmd.head[0] = 0xFE
-        cmd.head[1] = 0xEF
-        cmd.gpio = 0
-        ratio = min((self.curr_time - self.start_time).nanoseconds * 1e-9 / self.time_to_stand, 1.0)
-        self.last_commanded_positions = [
-            (1.0 - ratio) * self.stand_start_pos[i] + ratio * self.stand_up_pos[i].item()
-            for i in range(12)
-        ]
-        for i in range(12):
-            motorcmd = cmd.motor_cmd[i]
-            motorcmd.mode = 1
-            motorcmd.q = self.last_commanded_positions[i]
-            motorcmd.dq = 0.0
-            motorcmd.tau = 0.0
-            motorcmd.kp = self.kp
-            motorcmd.kd = self.kd
-
-        # Calculate CRC and publish
-        cmd.crc = Crc(cmd)
-        self.low_cmd_pub.publish(cmd)
-        self._log_publish_rate()
-        
-    def stand_control(self, dir_):
-        """PD control to standing position."""        
-        if self.low_state is None:
-            return
-        if self.stand_start_pos is None:
-            if self.last_commanded_positions is not None:
-                self.stand_start_pos = list(self.last_commanded_positions)
+        if name == "emergency":
+            log.error("Emergency mode activated. Kill the process to restart.")
+            self.release = EmergencyRelease(
+                state.q, now, self.cfg.emergency_release_time, self.cfg.kp_stand, self.cfg.kd_stand
+            )
+            self.mode = Mode.EMERGENCY
+        elif name in ("stand_up", "stand_down"):
+            up = name == "stand_up"
+            log.info("Standing up..." if up else "Standing down...")
+            q0 = self.last_cmd_q if self.last_cmd_q is not None else state.q
+            self.ramp = JointRamp(q0, self.stand_up_pos if up else self.stand_down_pos, now, self.cfg.time_to_stand)
+            self.mode = Mode.STAND_UP if up else Mode.STAND_DOWN
+        elif name == "policy":
+            if self.mode == Mode.STAND_DOWN:
+                log.warning("Policy request ignored while standing down: stand up first.")
+            elif not self.lidar_map.has_data:
+                log.warning("Policy request ignored: no lidar cloud received yet.")
             else:
-                self.stand_start_pos = [self.low_state.motor_state[i].q for i in range(12)]
+                log.info("Policy running...")
+                self.runner.reset()
+                self.mode = Mode.POLICY
 
-        if dir_ not in {"up", "down"}:
+    def run(self) -> None:
+        """Control tick (cfg.step_dt)."""
+        if self.low_state is None:
+            self.get_logger().info("Waiting for /lowstate...", throttle_duration_sec=2.0)
             return
+        state = read_low_state(self.low_state)
+        now = self._now_s()
+        events, self._events = self._events, []
+        for name in events:
+            self._handle_button(name, state, now)
 
-        if dir_ == "up":
-            ratio = min((self.curr_time - self.start_stand_time).nanoseconds * 1e-9 / self.time_to_stand, 1.0)
-            commanded_positions = [
-                (1.0 - ratio) * self.stand_start_pos[i] + ratio * self.stand_up_pos[i].item()
-                for i in range(12)
-            ]
-        elif dir_ == "down":
-            ratio = min((self.curr_time - self.start_stand_time).nanoseconds * 1e-9 / self.time_to_stand, 1.0)
-            commanded_positions = [
-                (1.0 - ratio) * self.stand_start_pos[i] + ratio * self.stand_down_pos[i].item()
-                for i in range(12)
-            ]
-        self.last_commanded_positions = commanded_positions
-        cmd = LowCmd()
-        cmd.head[0] = 0xFE
-        cmd.head[1] = 0xEF
-        cmd.gpio = 0
-        for i in range(12):
-            motorcmd = cmd.motor_cmd[i]
-            motorcmd.mode = 1
-            motorcmd.q = self.last_commanded_positions[i]
-            motorcmd.dq = 0.0
-            motorcmd.tau = 0.0
-            motorcmd.kp = self.kp
-            motorcmd.kd = self.kd
+        c = self.cfg
+        if self.mode in (Mode.STAND_UP, Mode.STAND_DOWN):
+            q, _ = self.ramp.at(now)
+            self._publish(q, c.kp_stand, c.kd_stand)
+        elif self.mode == Mode.POLICY:
+            self._policy_tick(state, now)
+        elif self.mode == Mode.EMERGENCY:
+            q, kp, kd, tau = self.release.command(state.q, state.dq, now)
+            self._publish(q, kp, kd, tau)
 
-        # Calculate CRC and publish
-        cmd.crc = Crc(cmd)
-        self.low_cmd_pub.publish(cmd)
-        self._log_publish_rate()
-        if ratio >= 1.0:
-            self.last_commanded_positions = [self.low_state.motor_state[i].q for i in range(12)]
-            self.stand_start_pos = None
-            # print("Stand complete!")print("Stand com
-        
-
-    def send_motor_commands(self):
-        """Send motor commands to the robot based on current action."""
-        # Convert current action from policy order to SDK order
-        actions_sdk_order = self.mapper.actions_policy_to_sdk(self.current_action)
-
-        self.last_commanded_positions = (self.mapper.default_pos_sdk + actions_sdk_order * self.action_scale).tolist()
-
-        cmd = LowCmd()
-        cmd.head[0] = 0xFE
-        cmd.head[1] = 0xEF
-        cmd.level_flag = 0xFF
-        cmd.gpio = 0
-
-        for i in range(12):
-            cmd.motor_cmd[i].mode = 0x01  # PMSM mode
-            cmd.motor_cmd[i].q = self.last_commanded_positions[i]
-            cmd.motor_cmd[i].kp = self.kp_p
-            cmd.motor_cmd[i].dq = 0.0
-            cmd.motor_cmd[i].kd = self.kd_p
-            cmd.motor_cmd[i].tau = 0.0
-
-        # Calculate CRC and publish
-        cmd.crc = Crc(cmd)
-        self.low_cmd_pub.publish(cmd)
-        self._log_publish_rate()
-
-    def _log_publish_rate(self):
-        self.publish_count += 1
-        now = time.perf_counter()
-        interval = now - self.last_publish_log_wall
-        if interval < self.publish_log_period:
+    def _policy_tick(self, state, now: float) -> None:
+        log = self.get_logger()
+        if not self.lidar_map.has_data:
+            log.info("Waiting for /utlidar/cloud...", throttle_duration_sec=2.0)
             return
-
-        elapsed = now - self.publish_start_wall
-        interval_count = self.publish_count - self.last_publish_log_count
-        avg_rate = self.publish_count / elapsed if elapsed > 0.0 else 0.0
-        interval_rate = interval_count / interval if interval > 0.0 else 0.0
-        self.get_logger().info(
-            f"lowcmd publish rate: avg={avg_rate:.1f} Hz, interval={interval_rate:.1f} Hz, count={self.publish_count}"
-        )
-        self.last_publish_log_wall = now
-        self.last_publish_log_count = self.publish_count
-
-    def run(self):
-        """Main control loop running at control_freq Hz."""
-        try:
-            if self.low_state is None:
-                print("Waiting for /lowstate...")
-                return
-            if self.lidar_state is None:
-                print("Waiting for /utlidar/cloud...")
-                return
-
-            # Start stand control immediately once joint state is available.
-            if self.tick_count == 0:
-                self.start_time = self.get_clock().now()
-
-            self.process_control_step()
-            torch.set_printoptions(precision=2, sci_mode=False, linewidth=120, threshold=300, edgeitems=2)
-            # print(self.height_map[0])
-
-        except KeyboardInterrupt:
-            print("\n\n" + "=" * 60)
-            print("Shutting down...")
-            print(f"Total inferences: {self.tick_count}")
-            print(f"Total ticks: {self.tick_count}")
-            elapsed = time.time() - self.start_time
-            print(f"Real time elapsed: {elapsed:.2f}s")
-            print(
-                f"Average policy frequency: {self.tick_count / elapsed:.1f}Hz (target: {1 / self.step_dt}Hz)"
-            )
-            print("=" * 60)
-
-    def process_control_step(self):
-        """Process one control step (called at control_freq Hz)."""
-        emergency_cond = False
-        policy_run_cond = False
-        stand_down_cond = False
-        stand_up_cond = False
-        if self.controller_state is not None:
-            emergency_cond = (
-                self.controller_state.buttons[8]
-                or self.emergency_mode
-            )
-            policy_run_cond = (
-                self.controller_state.buttons[9]
-                and not self.emergency_mode
-                and not self.standing_down
-            )
-            stand_down_cond = (
-                self.controller_state.buttons[0]
-                and not self.emergency_mode
-            )
-            stand_up_cond = (
-                self.controller_state.buttons[4]
-                and not self.emergency_mode
-            )
-            special_mode_runing = self.emergency_mode
-        self.tick_count += 1
-        self.curr_time = self.get_clock().now()
-
-        if emergency_cond:
-            if not self.emergency_mode:
-                print("Emergency mode activated. Kill the process to restart.")
-                self.emergency_mode = True
-                self.standing_down = False
-                self.standing_up = False
-                self.emergency_mode_start_time = self.get_clock().now()
-        elif stand_down_cond and not special_mode_runing:
-            print("Standing down...")
-            self.standing_down = True
-            self.standing_up = False
-            self.stand_start_pos = list(self.last_commanded_positions) if self.last_commanded_positions is not None else None
-            self.start_stand_time = self.get_clock().now()
-        elif stand_up_cond and not special_mode_runing:
-            print("Standing up...")            
-            self.standing_up = True
-            self.standing_down = False
-            self.stand_start_pos = list(self.last_commanded_positions) if self.last_commanded_positions is not None else None
-            self.start_stand_time = self.get_clock().now()
-        elif policy_run_cond:
-            print("Policy runing...")
-            self.standing_down = False
-            self.standing_up = False
-            self.run_policy = True
-        
-        if self.emergency_mode:
-            self.run_policy = False
-            self.emergency_mode_control()
-        elif self.standing_down:
-            self.run_policy = False
-            self.stand_control("down")
-        elif self.standing_up:
-            self.run_policy = False
-            self.stand_control("up")
-        elif self.run_policy:
-            self.policy_control()
-            
-    
-    def policy_control(self):
-        self.vel = select_vel(self.controller_state, self.cmd_vel_state)
-        proprio, lidar = get_obs_lidar_cnn(
-            self.low_state,
-            self.height_map,
-            self.vel,
-            prev_actions=self.current_action,
-            mapper=self.mapper,
-        )
-        with torch.no_grad():
-            actions_tensor = self.policy_lidar(proprio, lidar)
-        actions_policy_order = actions_tensor.squeeze(0).cpu()
-        self.current_action = actions_policy_order.clone()
-        self.current_action = (
-            (1.0 - self.action_smoothing) * self.current_action
-            + self.action_smoothing * actions_policy_order
-        )
-        self.send_motor_commands()
+        if self.lidar_map.stale(now):
+            log.warning("No lidar cloud: height grid cleared (all cells invalid).", throttle_duration_sec=2.0)
+            self.lidar_map.clear()
+        cmd = self.commands.get(now)
+        q_target = self.runner.step(state, cmd, self.lidar_map.observation())
+        self._publish(q_target, self.cfg.kp_policy, self.cfg.kd_policy)
 
 
 def main():
-    import argparse
-
     def str2bool(v):
         if isinstance(v, bool):
             return v
@@ -567,45 +205,27 @@ def main():
             return False
         raise argparse.ArgumentTypeError(f"Invalid boolean value: {v}")
 
-    parser = argparse.ArgumentParser(description="Go2 RL Policy Controller")
+    parser = argparse.ArgumentParser(description="Go2 RL policy controller")
+    parser.add_argument("--sim", type=str2bool, default=False, help="simulation (true) or real robot (false)")
+    parser.add_argument("--vx", type=float, default=None, help="constant forward velocity (starts the policy directly)")
+    parser.add_argument("--vy", type=float, default=None, help="constant lateral velocity")
+    parser.add_argument("--wz", type=float, default=None, help="constant yaw rate")
+    parser.add_argument("--policy", type=str, default=None, help="policy file name in resources/models/go2")
+    parser.add_argument("--iface", type=str, default=None, help="network interface of the real robot")
+    args, _ = parser.parse_known_args()  # leave ROS args alone
 
+    cfg = DeployConfig(sim=args.sim)
+    if args.policy:
+        cfg.policy_name = args.policy
+    if args.iface:
+        cfg.iface = args.iface
 
-    parser.add_argument(
-        "--sim", type=str2bool, default=False, help="Whether to use simulation or real robot"
-    )
-    
-    parser.add_argument(
-        "--vx", type=float, default=None, help="Velocity along x axis"
-    )
-    
-    parser.add_argument(
-        "--vy", type=float, default=None, help="Velocity along x axis"
-    )
-    
-    parser.add_argument(
-        "--wz", type=float, default=None, help="Velocity along x axis"
-    )
-
-    # Parse only known args to allow ROS args to pass through
-    args, unknown = parser.parse_known_args()
-
-    # Initialize DDS communication - must be called before creating nodes
     rclpy.init()
-
-    # Create controller
-    node = Go2PolicyController(
-        sim=args.sim,
-        vx=args.vx,
-        vy=args.vy,
-        wz=args.wz,
-    )
-
+    node = Go2PolicyController(cfg, vx=args.vx, vy=args.vy, wz=args.wz)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        print("\n" + "=" * 60)
-        print("Shutting down...")
-        print("=" * 60)
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()

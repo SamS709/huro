@@ -357,10 +357,10 @@ def _launch_setup(context, *args, **kwargs):
         gz_go2_state_adapter,
         lidar_frame_fallback_tf,
         imu_frame_fallback_tf,
-        TimerAction(period=2.0, actions=[odom_node]),
-        TimerAction(period=4.0, actions=[slam_node]),
-        TimerAction(period=6.0, actions=[nav2_launch]),
-        TimerAction(period=8.0, actions=[rviz_node]),
+        # TimerAction(period=2.0, actions=[odom_node]),
+        # TimerAction(period=4.0, actions=[slam_node]),
+        # TimerAction(period=6.0, actions=[nav2_launch]),
+        # TimerAction(period=8.0, actions=[rviz_node]),
     ]
 
 
