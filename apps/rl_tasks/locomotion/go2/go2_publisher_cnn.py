@@ -28,8 +28,8 @@ from unitree_go.msg import LowCmd, LowState
 from geometry_msgs.msg import Twist
 
 from huro_py.crc_go import Crc
-from huro_py.get_obs import get_obs_lidar_cnn, get_obs
-from huro_py.utils import Mapper, MockCmdVel,process_height_map_lidar_frame, process_height_map_raw, select_vel
+from huro_py.get_obs import get_obs_lidar_cnn
+from huro_py.utils import Mapper, MockCmdVel,process_height_map_lidar_frame, select_vel
 from sensor_msgs.msg import Joy, PointCloud2
 import sys
 """
@@ -94,8 +94,8 @@ class Go2PolicyController(Node):
         print(f"[INFO] Using device: {self.device}")
         
         # Load policy model        
-        policy_lidar_name = "policy_cnn_rnn4.pt"
-        policy_name = "policy_cnn_rnn4.pt"
+        policy_lidar_name = "policy_cnn_rnn_robust_1.pt"
+        policy_name = "policy_cnn_rnn_robust_1.pt"
         policy_lidar_path = os.path.join(share, "resources", "models", "go2", policy_lidar_name)
         policy_path = os.path.join(share, "resources", "models", "go2", policy_name)
         if not os.path.exists(policy_path):
