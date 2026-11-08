@@ -26,6 +26,7 @@ class DeployConfig:
     action_scale: float = 0.25
     clip_actions: float | None = None  # training cfg.clamp_actions -> desired_clip_actions
     filter_alpha: float | None = None  # training cfg.filter_actions -> alpha (0.8 in the training env)
+    proprio_hist_length: int = 0  # MUST equal the training cfg.proprio_hist_length (policy input = H+1 frames)
 
     time_to_stand: float = 5.0  # s, stand up / down ramp
     emergency_release_time: float = 5.0  # s, gains decay to zero

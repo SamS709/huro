@@ -20,6 +20,7 @@ class PolicyRunner:
         self.loc = LocomotionController(
             policy_path, num_envs=1, num_joints=12, action_scale=cfg.action_scale, device=device,
             clip_actions=cfg.clip_actions, filter_alpha=cfg.filter_alpha,
+            proprio_hist_length=cfg.proprio_hist_length,
         )
         self.default_policy = mapper.default_pos_policy.to(device)
         self._gravity_w = torch.tensor([0.0, 0.0, -1.0], device=device)
