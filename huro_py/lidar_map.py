@@ -59,6 +59,8 @@ class LidarHeightMap:
         h, hit = h[0], hit[0]
         old = self.age > self.max_age
         self.height[old] = 0.0
+        # h1 = torch.nan_to_num(self.height[None]).clamp(-10.0, 10.0)
+        # print(self.grid.to_image(h1))
         self.valid[old] = False
         self.age += 1.0
         self.height[hit] = h[hit]

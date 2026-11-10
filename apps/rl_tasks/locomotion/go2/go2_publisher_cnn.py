@@ -86,11 +86,12 @@ class Go2PolicyController(Node):
         self.last_cmd_q: torch.Tensor | None = None
         self.ramp: JointRamp | None = None
         self.release: EmergencyRelease | None = None
+        self._auto_start_policy = any(v is not None for v in (vx, vy, wz))
         self._events: list[str] = []  # button rising edges, consumed by the control tick
         self._prev_pressed: set[int] = set()
-        if any(v is not None for v in (vx, vy, wz)):  # headless: constant command, start the policy directly
+        if self._auto_start_policy:  # headless: constant command, stand before starting the policy
             self.commands.set_fixed(vx, vy, wz)
-            self.mode = Mode.POLICY
+            self.mode = Mode.STAND_UP
 
         # ---- ROS I/O
         self.low_cmd_pub = self.create_publisher(LowCmd, "/lowcmd", 10)
@@ -151,8 +152,8 @@ class Go2PolicyController(Node):
             self.ramp = JointRamp(q0, self.stand_up_pos if up else self.stand_down_pos, now, self.cfg.time_to_stand)
             self.mode = Mode.STAND_UP if up else Mode.STAND_DOWN
         elif name == "policy":
-            if self.mode == Mode.STAND_DOWN:
-                log.warning("Policy request ignored while standing down: stand up first.")
+            if self.mode == Mode.STAND_DOWN or (self.mode == Mode.STAND_UP and self._auto_start_policy):
+                log.warning("Policy request ignored while standing: stand up first.")
             elif not self.lidar_map.has_data:
                 log.warning("Policy request ignored: no lidar cloud received yet.")
             else:
@@ -173,8 +174,19 @@ class Go2PolicyController(Node):
 
         c = self.cfg
         if self.mode in (Mode.STAND_UP, Mode.STAND_DOWN):
-            q, _ = self.ramp.at(now)
+            if self.ramp is None:
+                self.ramp = JointRamp(
+                    state.q,
+                    self.stand_up_pos if self.mode == Mode.STAND_UP else self.stand_down_pos,
+                    now,
+                    c.time_to_stand,
+                )
+            q, complete = self.ramp.at(now)
             self._publish(q, c.kp_stand, c.kd_stand)
+            if self.mode == Mode.STAND_UP and self._auto_start_policy and complete:
+                self.get_logger().info("Standing up complete; starting policy...")
+                self.runner.reset()
+                self.mode = Mode.POLICY
         elif self.mode == Mode.POLICY:
             self._policy_tick(state, now)
         elif self.mode == Mode.EMERGENCY:
