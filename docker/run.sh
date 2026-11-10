@@ -2,6 +2,8 @@
 
 CONTAINER_NAME="huro_container"
 IMAGE_NAME="huro"
+# NVIDIA indexes only include NVIDIA GPUs; the integrated GPU is not included.
+NVIDIA_GPU_DEVICE="${NVIDIA_GPU_DEVICE:-0}"
 
 xhost +
 
@@ -17,6 +19,13 @@ else
         --rm \
         --network host \
         --env DISPLAY=$DISPLAY \
+        --env NVIDIA_VISIBLE_DEVICES=$NVIDIA_GPU_DEVICE \
+        --env NVIDIA_DRIVER_CAPABILITIES=all \
+        --env CUDA_VISIBLE_DEVICES=0 \
+        --env GZ_RENDER_ENGINE=ogre2 \
+        --env __NV_PRIME_RENDER_OFFLOAD=1 \
+        --env __GLX_VENDOR_LIBRARY_NAME=nvidia \
+        --gpus device=$NVIDIA_GPU_DEVICE \
         --privileged \
         --volume /tmp/.X11-unix:/tmp/.X11-unix \
         --volume $(pwd)/setup_uri.sh:/huro_ws/setup_uri.sh \

@@ -3,7 +3,14 @@ import tempfile
 import yaml
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+    SetEnvironmentVariable,
+    TimerAction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -375,7 +382,9 @@ def generate_launch_description():
                     "in factory.sdf."
                 ),
             ),
+            SetEnvironmentVariable("GZ_RENDER_ENGINE", "ogre2"),
+            SetEnvironmentVariable("__NV_PRIME_RENDER_OFFLOAD", "1"),
+            SetEnvironmentVariable("__GLX_VENDOR_LIBRARY_NAME", "nvidia"),
             OpaqueFunction(function=_launch_setup),
         ]
     )
-

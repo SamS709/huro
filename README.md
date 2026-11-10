@@ -77,7 +77,7 @@ ros2 launch huro go2_sim_gz.launch.py step_height:=0.1
 # second terminal
 colcon build
 source setup_uri.sh lo
-ros2 run huro go2_publisher.py --sim True
+ros2 run huro go2_publisher_cnn.py --sim True
 ```
 
 Finally, you can send a goal in rviz with the **Nav2 goal** tool.

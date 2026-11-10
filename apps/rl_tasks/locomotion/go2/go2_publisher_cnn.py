@@ -61,8 +61,15 @@ class Go2PolicyController(Node):
         self.cfg = cfg
         self.get_logger().info(f"use_sim_time: {self.get_parameter('use_sim_time').value}")
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.get_logger().info(f"Using device: {self.device}")
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA is unavailable. Start the Docker container with the NVIDIA "
+                "runtime (--gpus device=1) before running go2_publisher_cnn.py."
+            )
+        self.device = torch.device("cuda:0")
+        self.get_logger().info(
+            f"Using device: {self.device} ({torch.cuda.get_device_name(self.device)})"
+        )
 
         # ---- model, joint mapping, sensors, commands
         share = get_package_share_directory("huro")
