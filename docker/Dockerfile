@@ -49,7 +49,7 @@ RUN curl -fsSL https://packages.osrfoundation.org/gazebo.gpg \
     apt-get install -yy gz-harmonic ros-${ROS_DISTRO}-ros-gz && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip install numpy==1.24.2 pyspacemouse torch pyyaml simple-parsing ruamel.yaml shapely ros2-numpy transforms3d cupy-cuda12x
+RUN pip install numpy==1.24.2 'packaging>=22.0' 'setuptools<80' pyspacemouse torch pyyaml simple-parsing ruamel.yaml shapely ros2-numpy transforms3d cupy-cuda12x
 
 # MuJoCo
 RUN git clone https://github.com/deepmind/mujoco.git && \
@@ -78,6 +78,11 @@ RUN git clone https://github.com/ros2/rmw_cyclonedds -b ${ROS_DISTRO} && \
 RUN git clone https://github.com/unitreerobotics/unitree_ros2 && \
     mv unitree_ros2/cyclonedds_ws/src/unitree /huro_ws/src && \
     rm -rf unitree_ros2
+
+RUN cd /tmp && \
+    git clone https://github.com/unitreerobotics/unitree_sdk2_python.git && \
+    cd unitree_sdk2_python && \
+    pip3 install -e .
 
 # RUN git clone https://github.com/Livox-SDK/livox_ros_driver2.git && \
 #     cd livox_ros_driver2 && \
